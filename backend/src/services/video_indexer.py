@@ -57,7 +57,7 @@ class VideoIndexerService:
             'no_warnings': False,
             'extractor_orgs': {'youtube': {'player_client': ['android', 'web']}},
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win65; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         }
 
