@@ -69,12 +69,13 @@ class VideoIndexerService:
         except Exception as e:
             raise Exception(f"Youtube video download failed: {str(e)}")
 
-    def upload_video(self, video_path, video_name):
+    def upload_video(self, sas_url: str, video_name: str) -> str:
         """
-        Upload the video to Azure Video Indexer
+        Upload a video to Azure Video Indexer via a Blob Storage SAS URL.
+        Returns the Video Indexer video ID.
         """
         arm_token = self.get_access_token()
-        vi_token = self.get_access_token(arm_token)
+        vi_token = self.get_account_token(arm_token)
 
         api_url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos"
 
@@ -82,38 +83,45 @@ class VideoIndexerService:
             "accessToken": vi_token,
             "name": video_name,
             "privacy": "Private",
-            "indexingPreset": "Default"
+            "indexingPreset": "Default",
+            "videoUrl": sas_url
         }
 
-        logger.info(f"Uploading file {video_path} to Azure.....")
-
-        # Open the file in binary and stream it on azure
-        with open(video_path, 'rb') as video_file:
-            files = {'file': video_file}
-            response = requests.post(api_url, params=params, files=files)
+        logger.info(f"Submitting video to Azure Video Indexer: {video_name}")
+        response = requests.post(api_url, params=params)
 
         if response.status_code != 200:
             raise Exception(f"Azure Upload Failed: {response.text}")
 
-    def wait_for_processing(self, video_id):
-        logger.info(f"Waiting for the video {video_id}")
+        return response.json().get("id")
+
+    def get_video_insights(self, video_id: str) -> dict:
+        """
+        Poll Azure Video Indexer until the video is processed, then return the full insights JSON.
+        """
+        logger.info(f"Waiting for Video Indexer to process video: {video_id}")
+        url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos/{video_id}/Index"
+
         while True:
             arm_token = self.get_access_token()
             vi_token = self.get_account_token(arm_token)
 
-            url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos"
-            params = {"accessToken": vi_token}
-            response = requests.get(url, params=params)
-            data = response.json()
+            response = requests.get(url, params={"accessToken": vi_token})
+            if response.status_code != 200:
+                raise Exception(f"Failed to get video insights: {response.text}")
 
+            data = response.json()
             state = data.get("state")
+
             if state == "Processed":
+                logger.info(f"Video {video_id} processing complete")
                 return data
             elif state == "Failed":
-                raise Exception("Video Indexing Failed in Azure")
+                raise Exception(f"Video Indexing Failed in Azure for video: {video_id}")
             elif state == "Quarantined":
-                raise Exception("Video Quarantined (Copytight/Content Policy Violation)")
-            logger.info("Status {state}.....waiting 30s")
+                raise Exception(f"Video Quarantined (Copyright/Content Policy Violation): {video_id}")
+
+            logger.info(f"Video {video_id} status: {state} — waiting 30s")
             time.sleep(30)
 
     def extract_data(self, vi_json):

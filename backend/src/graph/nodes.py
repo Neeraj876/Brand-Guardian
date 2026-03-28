@@ -12,8 +12,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 # import state schema
 from backend.src.graph.state import VideoAuditState, ComplianceIssue
 
-# import service
+# import services
 from backend.src.services.video_indexer import VideoIndexerService
+from backend.src.services.blob_storage import BlobStorageService
 
 logger = logging.getLogger("brand-guardian")
 logging.basicConfig(level=logging.INFO)
@@ -31,28 +32,39 @@ def index_video_node(state: VideoAuditState) -> VideoAuditState:
 
     local_filename = "temp_audit_video.mp4"
 
+    blob_name = f"{video_id_input}.mp4"
+
     try:
         vi_service = VideoIndexerService()
+        blob_service = BlobStorageService()
 
         # Step 1: Download the video locally
         if "youtube.com" in video_url or "youtu.be" in video_url:
             local_path = vi_service.download_youtube_video(video_url, output_path=local_filename)
         else:
             raise Exception("Please provide a valid YouTube URL.")
-        
-        # Step 2: Upload the video to Azure Video Indexer and get the video ID
-        azure_video_id = vi_service.upload_video(local_filename, video_name=video_id_input)
-        logger.info(f"Video uploaded to Azure Video Indexer with ID: {azure_video_id}")
 
-        # Step 3: Clean up the local video file
+        # Step 2: Upload local file to Azure Blob Storage
+        blob_service.upload(local_path, blob_name)
+
+        # Step 3: Generate a SAS URL for Video Indexer to fetch the video
+        sas_url = blob_service.generate_sas_url(blob_name)
+
+        # Step 4: Submit the SAS URL to Azure Video Indexer and get the video ID
+        azure_video_id = vi_service.upload_video(sas_url, video_name=video_id_input)
+        logger.info(f"Video submitted to Azure Video Indexer with ID: {azure_video_id}")
+
+        # Step 5: Clean up the local video file
         if os.path.exists(local_path):
             os.remove(local_path)
 
-        # Step 4: Poll or wait for video processing completion and get insights
-        # raw_insights = vi_service.wait_for_processing(azure_video_id)
+        # Step 6: Clean up the blob from storage
+        blob_service.delete(blob_name)
+
+        # Step 7: Poll until processing is complete and get insights
         raw_insights = vi_service.get_video_insights(azure_video_id)
 
-        # Step 5: Extract relevant data from the insights
+        # Step 8: Extract relevant data from the insights
         clean_data = vi_service.extract_data(raw_insights)
 
         logger.info(f"----[Node:Indexer] Extracted Complete")

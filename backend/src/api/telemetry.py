@@ -7,7 +7,8 @@ logger = logging.getLogger("brand-guardian-telemetry")
 
 def setup_telemetry():
     """
-    Initializes Azure Monitor OpenTelemetry.
+    Initialize Azure Application Insights telemetry using Azure Monitor's
+    OpenTelemetry integration.
     """
 
     # RETRIEVE CONNECTION STRING 
@@ -16,7 +17,7 @@ def setup_telemetry():
         logger.warning("No instrumentation key found. Telemetry is Disabled.")
         return
     
-    # Configure the azure monitor
+    # Configure the azure monitor telemetry
     try:
         configure_azure_monitor(
             connection_string=connection_string,
