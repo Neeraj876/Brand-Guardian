@@ -6,18 +6,81 @@ from typing import List, Dict, Any
 
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_community.vectorstores import AzureSearch
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 
 # import state schema
-from backend.src.graph.state import VideoAuditState, ComplianceIssue
+from backend.src.graph.state import VideoAuditState
 
 # import services
 from backend.src.services.video_indexer import VideoIndexerService
 from backend.src.services.blob_storage import BlobStorageService
 
+from sentence_transformers import CrossEncoder
+
 logger = logging.getLogger("brand-guardian")
 logging.basicConfig(level=logging.INFO)
+
+_reranker = None
+
+def get_reranker() -> CrossEncoder:
+    """
+    Lazy-load reranker to avoid heavy model initialization at import time.
+    """
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _reranker
+
+def rerank(query: str, docs: list, top_k: int = 3) -> list:
+    """
+    Score each (query, doc) pair with a cross-encoder.
+    Returns top_k docs sorted by relevance score descending.
+    """
+    if not docs:
+        return []
+    
+    pairs = [(query, doc.page_content) for doc in docs]
+    scores = get_reranker().predict(pairs)
+    
+    scored_docs = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+    return [doc for _, doc in scored_docs[:top_k]]
+
+def extract_claims(transcript: str, ocr_text: List[str], llm) -> List[str]:
+    """
+    Extract 3-5 specific, checkable claims to improve retrieval targeting.
+    Falls back to a truncated transcript if parsing fails.
+    """
+    extraction_prompt = f"""
+    You are a compliance pre-screener.
+    Extract 3-5 specific, checkable claims from the video that should be validated against compliance rules.
+
+    Focus on:
+    - health claims
+    - pricing claims
+    - comparative claims
+    - testimonials/endorsements
+    - CTA and urgency language
+    - disclosures
+
+    Return ONLY a JSON array of strings.
+
+    TRANSCRIPT:
+    {transcript[:3000]}
+
+    ON-SCREEN TEXT:
+    {' '.join(ocr_text[:20])}
+    """
+    try:
+        response = llm.invoke([HumanMessage(content=extraction_prompt)])
+        claims = json.loads(response.content.strip())
+        if isinstance(claims, list) and claims:
+            return [str(c).strip() for c in claims[:5] if str(c).strip()]
+    except Exception as e:
+        logger.warning(f"Claim extraction failed, fallback to transcript query: {e}")
+
+    fallback = transcript[:500].strip()
+    return [fallback] if fallback else []
+
 
 # Node 1: Indexer
 def index_video_node(state: VideoAuditState) -> VideoAuditState:
@@ -84,27 +147,40 @@ def index_video_node(state: VideoAuditState) -> VideoAuditState:
 def compliance_audit_node(state: VideoAuditState) -> Dict[str, Any]:
     """
     This node performs retrieval augmented generation to audit the content of the video for compliance issues. 
+
+    RAG-based compliance audit:
+    1) claim extraction
+    2) hybrid candidate retrieval
+    3) cross-encoder reranking
+    4) LLM audit generation
     """
     logger.info(f"----[Node: Compliance Auditor] querying knowledge base & LLM")
 
     transcript = state.get('transcript', '')
     if not transcript:
         logger.warning("No transcript available. Skipping audit......")
+        # return {
+        #     "final_status" : "FAIL",
+        #     "final_report" : "Audit skipped because video processing failed (No Transcript)",
+        # }
+
+        # Add retrieved_contexts when transcript missing to help with debugging and potential partial audits based on OCR text alone
         return {
             "final_status" : "FAIL",
-            "final_report" : "Audit skipped because video processing failed (No Transcript)"
+            "final_report" : "Audit skipped because video processing failed (No Transcript)",
+            "retrieved_contexts": []
         }
     
     # Initialize clients
 
     llm = AzureChatOpenAI(
-        azure_deplyment= os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
+        azure_deployment= os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         openai_api_version= os.getenv("AZURE_OPENAI_API_VERSION"),
         temperature=0.0
     )
 
     embeddings = AzureOpenAIEmbeddings(
-        azure_deployment="text-embedding-3-small",
+        azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"),
         openai_api_version= os.getenv("AZURE_OPENAI_API_VERSION"),
     )
 
@@ -117,21 +193,77 @@ def compliance_audit_node(state: VideoAuditState) -> Dict[str, Any]:
 
     # RAG Retrieval
 
+    # Step A: Build retrieval claims from the transcript and OCR text. We concatenate the transcript and OCR text to create a single query string that represents the content of the video. This query will be used to search for relevant documents in the vector store.
+
     ocr_text = state.get('ocr_text', [])
     query_text = f"{transcript} {''.join(ocr_text)}"
+    claims = extract_claims(transcript, ocr_text, llm)
+    if not claims:
+        claims = [query_text[:500]]
 
-    # Perform similarity search in the vector store to retrieve relevant documents based on the transcript and OCR text. K=3 means we want to retrieve the top 3 most relevant documents.
-    docs = vector_store.similarity_search(query_text, k=3)
+    logger.info(f"Extracted {len(claims)} claims for retrieval.")
 
-    # We extract the page content from the retrieved documents and concatenate them into a single string, separated by two newlines for better readability. This string will be used as context for the LLM to generate the compliance audit report.
-    retrieved_rules = "\n\n".join([doc.page_content for doc in docs])
+    ## Perform similarity search in the vector store to retrieve relevant documents based on the transcript and OCR text. K=3 means we want to retrieve the top 3 most relevant documents.
+    # docs = vector_store.similarity_search(query_text, k=3)
+
+    ## Perform hybrid search in the vector store to retrieve relevant documents based on the transcript and OCR text. K=5 means we want to retrieve the top 5 most relevant documents.
+    # docs = vector_store.similarity_search(
+    # query_text,
+    # k=5,
+    # search_type="semantic_hybrid"
+    # )
+
+    # Step B: Retrieve more candidates than final context size (hybrid retrieval)
+    all_docs = []
+    for claim in claims:
+        retrieved = vector_store.similarity_search(
+            claim,
+            k=5,
+            search_type="hybrid",  # BM25 + vector fusion
+        )
+        all_docs.extend(retrieved)
+
+    # Fallback if claim-wise retrieval returns nothing
+    if not all_docs:
+        all_docs = vector_store.similarity_search(
+            query_text,
+            k=5,
+            search_type="hybrid",
+        )
+
+    # Step C: Deduplicate candidates
+    seen = set()
+    unique_docs = []
+    for doc in all_docs:
+        content = doc.page_content.strip()
+        if content and content not in seen:
+            unique_docs.append(doc)
+            seen.add(content)
+
+    # Step D: Rerank candidates and keep top docs
+    rerank_query = f"Brand compliance rules relevant to: {' | '.join(claims)}"
+    try:
+        top_docs = rerank(rerank_query, unique_docs, top_k=4)
+        if not top_docs:
+            top_docs = unique_docs[:4]
+    except Exception as e:
+        logger.warning(f"Reranker failed, falling back to hybrid order: {e}")
+        top_docs = unique_docs[:4]
+
+    # # We extract the page content from the reranked documents and concatenate them into a single string, separated by two newlines for better readability. This string will be used as context for the LLM to generate the compliance audit report.
+    # retrieved_rules = "\n\n".join([doc.page_content for doc in top_docs])
+
+    # Build context list from top_docs
+    retrieved_contexts = [doc.page_content for doc in top_docs if getattr(doc, "page_content", "").strip()]
+    retrieved_rules = "\n\n".join(retrieved_contexts)
+
 
     system_prompt = f"""
     You are a senior brand compliance auditor.
     OFFICIAL REGULATORY RULES:
     {retrieved_rules}
     INSTRUCTIONS:
-    1. Analyze the Transcript and OCT text below.
+    1. Analyze the Transcript and OCR text below.
     2. Identify ANY violations of the rules.
     3. Return strictly JSON in the following format:
     {{
@@ -161,19 +293,36 @@ def compliance_audit_node(state: VideoAuditState) -> Dict[str, Any]:
 
         # The LLM might return the JSON wrapped in markdown code blocks, so we need to extract the JSON string from the response content before parsing it.
         if "```" in content:
-            content = re.search(r"```(?:json)?(.?)```", content, re.DOTALL).group(1)
+            content = re.search(r"```(?:json)?(.*?)```", content, re.DOTALL).group(1)
 
         audit_data = json.loads(content.strip())
+        
+        # return {
+        #     "compliance_results": audit_data.get("compliance_results", []),
+        #     "final_status": audit_data.get("status", "FAIL"),
+        #     "final_report": audit_data.get("final_report", "")
+        # }
+ 
+        # Return contexts on success
         return {
             "compliance_results": audit_data.get("compliance_results", []),
             "final_status": audit_data.get("status", "FAIL"),
-            "final_report": audit_data.get("final_report", "")
+            "final_report": audit_data.get("final_report", ""),
+            "retrieved_contexts": retrieved_contexts,
         }
+
     except Exception as e:
         logger.error(f"System Error in auditor node: {str(e)}")
         # logging the raw response
         logger.error(f"Raw LLM response: {response.content if 'response' in locals() else 'None'}")
+        # return {
+        #     "errors": [str(e)],
+        #     "final_status": "FAIL",
+        # }
+
         return {
             "errors": [str(e)],
             "final_status": "FAIL",
+            "retrieved_contexts": [],
         }
+

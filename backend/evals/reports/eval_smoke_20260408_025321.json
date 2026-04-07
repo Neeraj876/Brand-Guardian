@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-04-07T21:23:21.619911+00:00",
+  "tag": "smoke",
+  "num_cases": 1,
+  "avg_latency_ms": null,
+  "error_rate": 1,
+  "ragas_scores": {
+    "faithfulness": NaN,
+    "answer_relevancy": NaN,
+    "llm_context_precision_without_reference": 0.0
+  },
+  "cases": [
+    {
+      "id": "case_001",
+      "question": "Check this ad for policy violations",
+      "status": "FAIL",
+      "response": "",
+      "retrieved_contexts": [],
+      "latency_ms": null,
+      "error": [
+        "HTTPSConnectionPool(host='openaipublic.blob.core.windows.net', port=443): Max retries exceeded with url: /encodings/cl100k_base.tiktoken (Caused by ProxyError('Unable to connect to proxy', NewConnectionError(\"HTTPSConnection(host='127.0.0.1', port=9): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\")))"
+      ]
+    }
+  ]
+}

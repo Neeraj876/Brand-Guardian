@@ -3,7 +3,7 @@ from backend.src.graph.state import VideoAuditState
 
 from backend.src.graph.nodes import (
     index_video_node,
-    audit_content_node
+    compliance_audit_node as audit_content_node
 )
 # This module defines the  DAG that orchestrates the video compliance audit process using langgraph. It constructs a directed graph where each node represents a specific processing step in the video audit processt. 
 # The graph is compiled into an executable app that can be run with the appropriate input state. It connects the nodes using the StateGraph from LaangGraph

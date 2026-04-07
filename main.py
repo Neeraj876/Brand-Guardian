@@ -1,7 +1,6 @@
 import uuid
 import json
 import logging
-from pprint import pprint
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -30,7 +29,7 @@ def run():
 
     # STEP 2: Define the initial state
     initial_inputs = {
-        "video_url": "https:youtu.be/dT7S5eYhcQ",
+        "video_url": "https://youtu.be/dT7S5eYhcQ",
         "video_id": f"vid_{session_id[:8]}",
         "compliance_results": [],
         "errors": []
@@ -60,14 +59,5 @@ def run():
     except Exception as e:
         logger.error(f"Workflow Execution Failed: {str(e)}")
         raise e
-    
-if __name__ == "main":
-    run()
-
-
-
-
-
-
 if __name__ == "__main__":
-    main()
+    run()

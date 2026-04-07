@@ -56,7 +56,7 @@ async def audit_video(request: AuditRequest):
     """ 
     session_id = str(uuid.uuid4())
     video_id_short = f"vid_{session_id[:8]}"
-    logger.info(f"Received the Audit Request: {request.video_url} {Session: {session_id}}")
+    logger.info(f"Received the Audit Request: {request.video_url} Session: {session_id}")
 
     initial_inputs = {
         "video_url": request.video_url,
@@ -72,7 +72,7 @@ async def audit_video(request: AuditRequest):
             video_id = final_state.get("video_id"),
             status = final_state.get("final_status", "UNKNOWN"),
             final_report = final_state.get("final_report", "No report generated"),
-            compliance_results = final_state
+            compliance_results = final_state.get("compliance_results", [])
         )
     except Exception as e:
         logger.error(F"Audit Failed: {str(e)}")

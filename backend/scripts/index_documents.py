@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # Document loaders and splitters
-from langchain_components.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_openai import AzureOpenAIEmbeddings
@@ -34,7 +34,7 @@ def index_docs():
     logger.info(f"AZURE_OPENAI_API_VERSION: {os.getenv("AZURE_OPENAI_API_VERSION")}")
     logger.info(f"Embedding Deployment: {os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT', 'text-embedding-3-small')}")
     logger.info(f"AZURE_SEARCH_ENDPOINT: {os.getenv('AZURE_SEARCH_ENDPOINT')}")
-    logger.info(f"AZURE_SEARCH_INDEX_NAME: {os.getenv('AZURE_SEARCH_INDEX_NAME')}")
+    logger.info(f"AZURE_SEARCH_INDEX: {os.getenv('AZURE_SEARCH_INDEX')}")
     logger.info("="*60)
 
     # Validate the required environment variables
@@ -57,7 +57,7 @@ def index_docs():
     try:
         logger.info("Initializing Azure Open AI Embeddings.....")
         embeddings = AzureOpenAIEmbeddings(
-            azure_deplyment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", 'text-embedding-3-small'),
+            azure_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", 'text-embedding-3-small'),
             azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT"),
             api_key = os.getenv("AZURE_OPENAI_API_KEY"),
             openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
@@ -74,12 +74,12 @@ def index_docs():
         logger.info("Initializing Azure AI Search Vector Store.....")
         vector_store = AzureSearch(
             azure_search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT"),
-            azure_search_key = os.getenv("AZURE_SEARCH_API_KEY"),
-            index_name = os.getenv("AZURE_SEARCH_INDEX_NAME"),
+            azure_search_key = os.getenv("AZURE_SEARCH_KEY"),
+            index_name = os.getenv("AZURE_SEARCH_INDEX"),
             embedding_function = embeddings.embed_query,
         )
 
-        logger.info("Vector Store initialized for index: {index_name}")
+        logger.info(f"Vector Store initialized for index: {os.getenv('AZURE_SEARCH_INDEX')}")
     except Exception as e:
         logger.error(f"Failed to initialize Azure AI Search: {e}")
         logger.error("Please verify your Azure Search Endpoint, API key and index name.")
@@ -88,8 +88,8 @@ def index_docs():
     # Step 1: Load documents
     pdf_files = glob.glob(os.path.join(data_folder, "*.pdf"))
     if not pdf_files:
-        logger.warning("No PDFs found in {data_folder}. Please add files.")
-    logger.info(f"Found {len(pdf_files)} PSfs to process: {[os.path.basename(f) for f in pdf_files]}")
+        logger.warning(f"No PDFs found in {data_folder}. Please add files.")
+    logger.info(f"Found {len(pdf_files)} PDFs to process: {[os.path.basename(f) for f in pdf_files]}")
 
     all_chunks = []
 
@@ -103,30 +103,37 @@ def index_docs():
             # Step 2: Split documents into chunks (Chunking strategy)
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             chunks = text_splitter.split_documents(raw_docs)
-            for chunk in chunks:
-                chunk.metadata["source"] = os.path.basename(pdf_file)
-
+            # for chunk in chunks:
+            #     chunk.metadata["source"] = os.path.basename(pdf_file)
+            for i, chunk in enumerate(chunks, start=1):
+                source = os.path.basename(pdf_file)
+                page = int(chunk.metadata.get("page", 0)) + 1
+                chunk.metadata["source"] = source
+                chunk.metadata["page"] = page
+                chunk.metadata["chunk_index"] = i
+                chunk.metadata["evidence_id"] = f"{source}:{page}:{i}"
+                
             all_chunks.extend(chunks)
             logger.info(f"Split into {len(chunks)} chunks.")
         
         except Exception as e:
             logger.error(f"Failed to process {pdf_file}: {e}")
 
-        # Upload to Azure
-        if all_chunks:
-            logger.info(f"Uploading {len(all_chunks)} chunks to Azure AI Search Index '{index_name}'")
-            try:
-                # Azure search accepts batches automatically via this method
-                vector_store.add_documents(documents = all_chunks)
-                logger.info("="*60)
-                logger.info("Indexing Complete! Knowdge Base is ready...")
-                logger.info(f"Total chunks indexed: {len(all_chunks)}")
-                logger.info("="*60)
-            except Exception as e:
-                logger.error(f"Failed to upload the documents to Azure Search: {e}")
-                logger.error("Please check the Azure Search configuration and try again")
-        else:
-            logger.warning("No documents were processed")
+    # Upload once after all files are processed
+    if all_chunks:
+        logger.info(f"Uploading {len(all_chunks)} chunks to Azure AI Search Index '{os.getenv('AZURE_SEARCH_INDEX')}'")
+        try:
+            # Azure search accepts batches automatically via this method
+            vector_store.add_documents(documents=all_chunks)
+            logger.info("="*60)
+            logger.info("Indexing complete. Knowledge base is ready.")
+            logger.info(f"Total chunks indexed: {len(all_chunks)}")
+            logger.info("="*60)
+        except Exception as e:
+            logger.error(f"Failed to upload documents to Azure Search: {e}")
+            logger.error("Please check the Azure Search configuration and try again")
+    else:
+        logger.warning("No documents were processed")
 
 if __name__ == "__main__":
     index_docs()

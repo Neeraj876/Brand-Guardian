@@ -21,7 +21,7 @@ class VideoIndexerService:
         Obtains an Azure Active Directory (AAD) issued access token for Azure Resource Manager (ARM).
         """
         try:
-            token_object = self.credential.get_token("https:///management.azure.com/.default")
+            token_object = self.credential.get_token("https://management.azure.com/.default")
             return token_object.token
         except Exception as e:
             logger.error(f"Failed to get Azure token: {e}")
@@ -140,7 +140,7 @@ class VideoIndexerService:
         return {
             "transcript": " ".join(transcript_lines),
             "ocr_text": ocr_lines,
-            "video_metadat": {
+            "video_metadata": {
                 "duration": vi_json.get("summarizedInsights", {}).get("duration"),
                 "platform": "youtube"
             }

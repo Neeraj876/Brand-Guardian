@@ -37,6 +37,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code
+.claude/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -44,3 +47,6 @@ Thumbs.db
 mlruns/
 artifacts/
 models/
+
+# Local docs copies
+docs/
